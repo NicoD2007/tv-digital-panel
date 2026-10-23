@@ -63,14 +63,15 @@ async function validarUrl(valor: string): Promise<URL> {
     throw new Error("La URL no es válida.");
   }
 
-  if (
-    url.protocol !== "https:" ||
-    url.username ||
-    url.password ||
-    !url.hostname ||
-    url.port && url.port !== "443"
-  ) {
-    throw new Error("Solo se admiten URL HTTPS públicas sin credenciales.");
+ if (
+  !["http:", "https:"].includes(url.protocol) ||
+  url.username ||
+  url.password ||
+  !url.hostname ||
+  (url.protocol === "https:" && url.port && url.port !== "443") ||
+  (url.protocol === "http:" && url.port && url.port !== "80")
+) {
+ throw new Error("Solo se admiten URL HTTP o HTTPS públicas sin credenciales.");
   }
 
   const host = url.hostname.toLowerCase();
