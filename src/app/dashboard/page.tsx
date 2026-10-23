@@ -109,12 +109,12 @@ export default function DashboardPage() {
       visible: rol === "admin",
     },
     {
-      titulo: "Canales",
-      descripcion: "Administrar canales y enlaces.",
-      icono: "📺",
-      ruta: null,
-      visible: rol === "admin",
-    },
+  titulo: "Canales",
+  descripcion: "Administrar canales y enlaces.",
+  icono: "📺",
+  ruta: "/canales",
+  visible: rol === "admin",
+},
     {
       titulo: "Estadísticas",
       descripcion: "Consultar el estado general del servicio.",
