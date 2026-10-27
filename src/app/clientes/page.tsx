@@ -12,7 +12,25 @@ type Cliente = {
   activo: boolean;
   plan: string;
   vencimiento: string;
+  // Instante exacto de vencimiento (ms) y marca de prueba gratuita.
+  vencimientoMs?: number | null;
+  esPrueba?: boolean;
 };
+
+type TipoCuenta = "normal" | "prueba";
+
+// Fecha y hora en Argentina (donde se calculan todos los vencimientos).
+function mostrarFechaHora(ms: number) {
+  return new Intl.DateTimeFormat("es-AR", {
+    timeZone: "America/Argentina/Buenos_Aires",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(ms));
+}
 
 type FiltroEstado = "todos" | "activos" | "inactivos";
 type OrdenVencimiento = "proximo" | "lejano";
@@ -25,6 +43,7 @@ export default function ClientesPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [plan, setPlan] = useState("1 mes");
+  const [tipo, setTipo] = useState<TipoCuenta>("normal");
   const [guardando, setGuardando] = useState(false);
 
   const [busqueda, setBusqueda] = useState("");
@@ -101,6 +120,15 @@ export default function ClientesPage() {
     });
 
     return resultado.sort((a, b) => {
+      if (
+        typeof a.vencimientoMs === "number" &&
+        typeof b.vencimientoMs === "number"
+      ) {
+        return ordenVencimiento === "proximo"
+          ? a.vencimientoMs - b.vencimientoMs
+          : b.vencimientoMs - a.vencimientoMs;
+      }
+
       const fechaA = a.vencimiento || "";
       const fechaB = b.vencimiento || "";
 
@@ -126,7 +154,12 @@ export default function ClientesPage() {
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ email, password, plan }),
+        // El vencimiento lo calcula siempre el servidor.
+        body: JSON.stringify(
+          tipo === "prueba"
+            ? { email, password, tipo }
+            : { email, password, tipo, plan }
+        ),
       });
 
       const datos = await respuesta.json();
@@ -135,10 +168,17 @@ export default function ClientesPage() {
         throw new Error(datos.error || "No se pudo crear el cliente.");
       }
 
-      setMensaje("Cliente creado correctamente.");
+      setMensaje(
+        tipo === "prueba" && typeof datos.vencimientoMs === "number"
+          ? `Prueba gratuita creada. Vence el ${mostrarFechaHora(
+              datos.vencimientoMs
+            )} (hora de Argentina).`
+          : "Cliente creado correctamente."
+      );
       setEmail("");
       setPassword("");
       setPlan("1 mes");
+      setTipo("normal");
 
       await cargarClientes(token);
     } catch (error) {
@@ -288,29 +328,84 @@ export default function ClientesPage() {
               />
             </div>
 
-            <div className="sm:col-span-2">
-              <label className="mb-2 block text-sm">Plan</label>
-              <select
-                value={plan}
-                onChange={(e) => setPlan(e.target.value)}
-                className="w-full rounded-lg border border-slate-700 bg-slate-800 p-3"
-              >
-                <option value="1 mes">1 mes</option>
-                <option value="2 meses">2 meses</option>
-                <option value="3 meses">3 meses</option>
-              </select>
-              <p className="mt-2 text-sm text-slate-400">
-                La fecha de vencimiento se calculará automáticamente según
-                el plan seleccionado.
+            <fieldset className="sm:col-span-2">
+              <legend className="mb-2 block text-sm">Tipo de cuenta</legend>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {(
+                  [
+                    {
+                      valor: "normal",
+                      titulo: "Suscripción normal",
+                      detalle: "Vence según el plan que elijas.",
+                    },
+                    {
+                      valor: "prueba",
+                      titulo: "Prueba gratuita de 2 horas",
+                      detalle: "Vence a las 2 horas exactas de crearla.",
+                    },
+                  ] as const
+                ).map((opcion) => (
+                  <label
+                    key={opcion.valor}
+                    className={`cursor-pointer rounded-lg border p-3 ${
+                      tipo === opcion.valor
+                        ? "border-blue-500 bg-slate-800"
+                        : "border-slate-700 bg-slate-900 hover:bg-slate-800"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="tipoCuenta"
+                      value={opcion.valor}
+                      checked={tipo === opcion.valor}
+                      onChange={() => setTipo(opcion.valor)}
+                      className="mr-2"
+                    />
+                    <span className="font-medium">{opcion.titulo}</span>
+                    <span className="mt-1 block text-sm text-slate-400">
+                      {opcion.detalle}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+
+            {tipo === "normal" ? (
+              <div className="sm:col-span-2">
+                <label className="mb-2 block text-sm">Plan</label>
+                <select
+                  value={plan}
+                  onChange={(e) => setPlan(e.target.value)}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 p-3"
+                >
+                  <option value="1 mes">1 mes</option>
+                  <option value="2 meses">2 meses</option>
+                  <option value="3 meses">3 meses</option>
+                </select>
+                <p className="mt-2 text-sm text-slate-400">
+                  La fecha de vencimiento se calculará automáticamente según
+                  el plan seleccionado.
+                </p>
+              </div>
+            ) : (
+              <p className="text-sm text-slate-400 sm:col-span-2">
+                No hace falta elegir plan ni fecha: la prueba vence sola a las
+                2 horas exactas de crearla y no se puede extender. Para
+                convertirla en suscripción, renovala desde Planes y
+                vencimientos.
               </p>
-            </div>
+            )}
 
             <button
               type="submit"
               disabled={guardando || !token}
               className="rounded-lg bg-blue-600 px-4 py-3 font-semibold hover:bg-blue-500 disabled:opacity-50 sm:col-span-2"
             >
-              {guardando ? "Creando..." : "Crear cliente"}
+              {guardando
+                ? "Creando..."
+                : tipo === "prueba"
+                  ? "Crear prueba gratuita"
+                  : "Crear cliente"}
             </button>
           </form>
         </section>
@@ -386,6 +481,7 @@ export default function ClientesPage() {
                 <option value="1 mes">1 mes</option>
                 <option value="2 meses">2 meses</option>
                 <option value="3 meses">3 meses</option>
+                <option value="Prueba 2 horas">Prueba gratuita</option>
               </select>
             </div>
 
@@ -488,11 +584,17 @@ export default function ClientesPage() {
                       <td className="p-4">
                         <span
                           className="inline-block min-w-28 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-slate-300"
-                          aria-label={`Vencimiento: ${mostrarFecha(
-                            cliente.vencimiento
-                          )}`}
+                          aria-label={`Vencimiento: ${
+                            cliente.esPrueba &&
+                            typeof cliente.vencimientoMs === "number"
+                              ? mostrarFechaHora(cliente.vencimientoMs)
+                              : mostrarFecha(cliente.vencimiento)
+                          }`}
                         >
-                          {mostrarFecha(cliente.vencimiento)}
+                          {cliente.esPrueba &&
+                          typeof cliente.vencimientoMs === "number"
+                            ? mostrarFechaHora(cliente.vencimientoMs)
+                            : mostrarFecha(cliente.vencimiento)}
                         </span>
                       </td>
 
