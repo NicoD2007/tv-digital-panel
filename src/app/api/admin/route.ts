@@ -1,6 +1,16 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { adminAuth, adminDb } from "@/lib/firebase-admin";
+import {
+  CREDITOS_PRUEBA,
+  datosPruebaGratuita,
+  esFechaValida,
+  estaVencido,
+  finDeDiaArgentinaMs,
+  leerVencimientoMs,
+  obtenerFechaArgentina,
+  sumarMesesAFecha,
+} from "@/lib/vencimientos";
 
 export const runtime = "nodejs";
 
@@ -68,48 +78,8 @@ function esEmailValido(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-function esFechaValida(fecha: string) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) return false;
-
-  const [anio, mes, dia] = fecha.split("-").map(Number);
-  const fechaUTC = new Date(Date.UTC(anio, mes - 1, dia));
-
-  return (
-    fechaUTC.getUTCFullYear() === anio &&
-    fechaUTC.getUTCMonth() === mes - 1 &&
-    fechaUTC.getUTCDate() === dia
-  );
-}
-
-function obtenerFechaArgentina() {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Argentina/Buenos_Aires",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date());
-}
-
-function sumarMesesAFecha(fechaBase: string, meses: number): string {
-  if (!esFechaValida(fechaBase) || !Number.isInteger(meses) || meses < 1) {
-    throw new Error("Fecha o cantidad de meses no válida");
-  }
-
-  const [anio, mes, dia] = fechaBase.split("-").map(Number);
-  const destino = new Date(Date.UTC(anio, mes - 1 + meses, 1));
-
-  const ultimoDia = new Date(
-    Date.UTC(destino.getUTCFullYear(), destino.getUTCMonth() + 1, 0)
-  ).getUTCDate();
-
-  destino.setUTCDate(Math.min(dia, ultimoDia));
-
-  return [
-    destino.getUTCFullYear(),
-    String(destino.getUTCMonth() + 1).padStart(2, "0"),
-    String(destino.getUTCDate()).padStart(2, "0"),
-  ].join("-");
-}
+// Las funciones de fecha (esFechaValida, obtenerFechaArgentina, sumarMesesAFecha)
+// y la regla de vencimiento viven ahora en src/lib/vencimientos.ts.
 
 function calcularVencimiento(plan: string) {
   const meses = MESES_POR_PLAN[plan];
@@ -311,21 +281,16 @@ export async function GET(request: NextRequest) {
             .get();
 
     const datos = snapshot.val() || {};
-    const hoy = obtenerFechaArgentina();
+    const ahora = Date.now();
     const actualizaciones: Record<string, boolean> = {};
 
     for (const [uid, valor] of Object.entries(datos)) {
       const cliente = (valor || {}) as Record<string, unknown>;
-      const vencimiento =
-        typeof cliente.vencimiento === "string"
-          ? cliente.vencimiento
-          : "";
 
-      if (
-        cliente.activo === true &&
-        esFechaValida(vencimiento) &&
-        vencimiento <= hoy
-      ) {
+      // Misma regla que usan la app y las reglas de Firebase (ver
+      // src/lib/vencimientos.ts): se compara contra el instante exacto de
+      // vencimiento, no solo contra la fecha.
+      if (cliente.activo === true && estaVencido(cliente, ahora)) {
         actualizaciones[`${uid}/activo`] = false;
       }
     }
@@ -350,8 +315,7 @@ export async function GET(request: NextRequest) {
             ? cliente.vencimiento
             : "";
 
-        const vencido =
-          esFechaValida(vencimiento) && vencimiento <= hoy;
+        const vencido = estaVencido(cliente, ahora);
 
         return {
           uid,
@@ -359,6 +323,10 @@ export async function GET(request: NextRequest) {
           activo: cliente.activo === true && !vencido,
           plan: typeof cliente.plan === "string" ? cliente.plan : "",
           vencimiento,
+          // Instante exacto de vencimiento. Para cuentas anteriores se deduce
+          // de `vencimiento` (no se escribe nada en la base).
+          vencimientoMs: leerVencimientoMs(cliente),
+          esPrueba: cliente.esPrueba === true,
         };
       });
 
@@ -427,6 +395,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // "normal" (valor por defecto, como hasta ahora) o "prueba".
+    const tipo = typeof cuerpo.tipo === "string" ? cuerpo.tipo : "normal";
+
+    if (tipo !== "normal" && tipo !== "prueba") {
+      return NextResponse.json(
+        { error: "Tipo de cuenta no válido" },
+        { status: 400 }
+      );
+    }
+
+    const esPrueba = tipo === "prueba";
     const plan = typeof cuerpo.plan === "string" ? cuerpo.plan : "";
 
     if (!esEmailValido(email) || password.length < 6) {
@@ -436,18 +415,36 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!esPlanValido(plan)) {
+    if (!esPrueba && !esPlanValido(plan)) {
       return NextResponse.json({ error: "Plan no válido" }, { status: 400 });
     }
 
-    const meses = MESES_POR_PLAN[plan];
-    const vencimiento = calcularVencimiento(plan);
+    // El vencimiento SIEMPRE se calcula acá, en el servidor. Una prueba dura
+    // exactamente 2 horas desde este instante; el cliente no envía ninguna fecha.
+    const ahoraMs = Date.now();
+    let datosPlan: Record<string, unknown>;
+    let creditosNecesarios: number;
+
+    if (esPrueba) {
+      datosPlan = datosPruebaGratuita(ahoraMs);
+      creditosNecesarios = CREDITOS_PRUEBA;
+    } else {
+      const vencimientoNormal = calcularVencimiento(plan);
+
+      datosPlan = {
+        plan,
+        vencimiento: vencimientoNormal,
+        vencimientoMs: finDeDiaArgentinaMs(vencimientoNormal),
+        creadoEn: new Date(ahoraMs).toISOString(),
+      };
+      creditosNecesarios = MESES_POR_PLAN[plan];
+    }
 
     // Solo los revendedores consumen créditos al crear clientes.
-    if (usuarioActual.rol === "revendedor") {
+    if (usuarioActual.rol === "revendedor" && creditosNecesarios > 0) {
       revendedorQuePago = usuarioActual.uid;
-      await reservarCreditos(revendedorQuePago, meses);
-      creditosReservados = meses;
+      await reservarCreditos(revendedorQuePago, creditosNecesarios);
+      creditosReservados = creditosNecesarios;
     }
 
     const cuenta = await adminAuth.createUser({
@@ -462,8 +459,7 @@ export async function POST(request: NextRequest) {
     await adminDb.ref(`usuarios/${cuenta.uid}`).set({
       email,
       activo: true,
-      plan,
-      vencimiento,
+      ...datosPlan,
       creadoPor:
         usuarioActual.rol === "admin" ? "admin" : usuarioActual.uid,
     });
@@ -477,9 +473,13 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json(
       {
-        mensaje: "Cliente creado correctamente",
+        mensaje: esPrueba
+          ? "Prueba gratuita creada correctamente"
+          : "Cliente creado correctamente",
         uid: cuenta.uid,
-        vencimiento,
+        vencimiento: datosPlan.vencimiento,
+        vencimientoMs: datosPlan.vencimientoMs,
+        esPrueba,
         ...(revendedorQuePago ? { creditosRestantes: saldoRestante } : {}),
       },
       { status: 201 }
@@ -760,8 +760,11 @@ export async function PATCH(request: NextRequest) {
           ? datosCliente.vencimiento
           : "";
 
+      // Una prueba no aporta "días a favor": al renovarla, cuenta desde hoy.
       const fechaBase =
-        esFechaValida(vencimientoActual) && vencimientoActual > hoy
+        datosCliente.esPrueba !== true &&
+        esFechaValida(vencimientoActual) &&
+        vencimientoActual > hoy
           ? vencimientoActual
           : hoy;
 
@@ -778,6 +781,10 @@ export async function PATCH(request: NextRequest) {
         await referencia.update({
           plan,
           vencimiento: nuevoVencimiento,
+          vencimientoMs: finDeDiaArgentinaMs(nuevoVencimiento),
+          // null elimina la marca: una prueba renovada (acción explícita del
+          // administrador o revendedor) pasa a ser una suscripción normal.
+          esPrueba: null,
           activo: true,
         });
       } catch (error) {
@@ -808,6 +815,26 @@ export async function PATCH(request: NextRequest) {
       });
     }
 
+    // Las pruebas gratuitas no se pueden extender ni reactivar editándolas a
+    // mano. Para convertirlas en suscripción hay que usar "renovar".
+    if (datosCliente.esPrueba === true) {
+      const intentaCambiarPlazo =
+        typeof cuerpo.plan === "string" ||
+        typeof cuerpo.vencimiento === "string";
+      const intentaReactivarVencida =
+        cuerpo.activo === true && estaVencido(datosCliente, Date.now());
+
+      if (intentaCambiarPlazo || intentaReactivarVencida) {
+        return NextResponse.json(
+          {
+            error:
+              "Esta cuenta es una prueba gratuita: no se puede extender ni reactivar. Para convertirla en suscripción, renovala con un plan.",
+          },
+          { status: 409 }
+        );
+      }
+    }
+
     // Edición manual de clientes, conservada.
     const cambios: Record<string, unknown> = {};
 
@@ -829,6 +856,9 @@ export async function PATCH(request: NextRequest) {
       }
 
       cambios.vencimiento = cuerpo.vencimiento;
+      // Se mantiene sincronizado el instante exacto que usan la app y las
+      // reglas de Firebase.
+      cambios.vencimientoMs = finDeDiaArgentinaMs(cuerpo.vencimiento);
     }
 
     if (Object.keys(cambios).length === 0) {
