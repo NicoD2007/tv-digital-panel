@@ -12,7 +12,23 @@ type Cliente = {
   activo: boolean;
   plan: string;
   vencimiento: string;
+  // Instante exacto de vencimiento (ms) y marca de prueba gratuita.
+  vencimientoMs?: number | null;
+  esPrueba?: boolean;
 };
+
+const MS_POR_DIA = 86400000;
+
+function mostrarHora(ms: number) {
+  return new Intl.DateTimeFormat("es-AR", {
+    timeZone: "America/Argentina/Buenos_Aires",
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(ms));
+}
 
 type Filtro = "todos" | "vigentes" | "proximos" | "vencidos";
 
@@ -95,8 +111,15 @@ export default function PlanesPage() {
 
       let estado: "vigente" | "proximo" | "vencido" | "sin-fecha";
 
-      if (dias === null) estado = "sin-fecha";
-      else if (dias <= 0) estado = "vencido";
+      if (typeof cliente.vencimientoMs === "number") {
+        // Misma regla que la app y las reglas de Firebase: el instante exacto.
+        const restante = cliente.vencimientoMs - Date.now();
+
+        if (restante <= 0) estado = "vencido";
+        else if (restante <= 7 * MS_POR_DIA) estado = "proximo";
+        else estado = "vigente";
+      } else if (dias === null) estado = "sin-fecha";
+      else if (dias < 0) estado = "vencido";
       else if (dias <= 7) estado = "proximo";
       else estado = "vigente";
 
@@ -125,7 +148,11 @@ export default function PlanesPage() {
       !window.confirm(
         `¿Renovar a ${cliente.email} por ${duracion} ${
           duracion === 1 ? "mes" : "meses"
-        }? La fecha de vencimiento se actualizará automáticamente.`
+        }? La fecha de vencimiento se actualizará automáticamente.${
+          cliente.esPrueba
+            ? " Esto convierte la prueba gratuita en una suscripción."
+            : ""
+        }`
       )
     ) {
       return;
@@ -284,11 +311,21 @@ export default function PlanesPage() {
                       <td className="p-3">{cliente.plan || "Sin plan"}</td>
                       <td className="p-3">
                         {mostrarFecha(cliente.vencimiento)}
-                        {cliente.dias !== null && cliente.dias > 0 && (
+                        {cliente.esPrueba &&
+                        typeof cliente.vencimientoMs === "number" ? (
+                          <p className="mt-1 text-xs text-slate-400">
+                            Prueba gratuita · vence {mostrarHora(cliente.vencimientoMs)}
+                          </p>
+                        ) : cliente.dias !== null && cliente.dias > 0 ? (
                           <p className="mt-1 text-xs text-slate-400">
                             {cliente.dias} día(s) restantes
                           </p>
-                        )}
+                        ) : cliente.estado === "proximo" &&
+                          cliente.dias === 0 ? (
+                          <p className="mt-1 text-xs text-slate-400">
+                            Vence hoy
+                          </p>
+                        ) : null}
                       </td>
                       <td className="p-3">
                         <span
@@ -306,7 +343,9 @@ export default function PlanesPage() {
                         >
                           {vencido
                             ? "Vencido"
-                            : proximo
+                            : cliente.esPrueba
+                              ? "Prueba activa"
+                              : proximo
                               ? "Próximo a vencer"
                               : cliente.estado === "sin-fecha"
                                 ? "Sin fecha"
