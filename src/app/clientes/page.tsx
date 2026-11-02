@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -45,6 +44,12 @@ export default function ClientesPage() {
   const [plan, setPlan] = useState("1 mes");
   const [tipo, setTipo] = useState<TipoCuenta>("normal");
   const [guardando, setGuardando] = useState(false);
+
+  // Datos de la última cuenta creada para poder copiarlos nuevamente.
+  const [datosCopiados, setDatosCopiados] = useState("");
+  const [estadoCopia, setEstadoCopia] = useState<
+    "copiado" | "pendiente" | ""
+  >("");
 
   const [busqueda, setBusqueda] = useState("");
   const [filtroEstado, setFiltroEstado] = useState<FiltroEstado>("todos");
@@ -142,10 +147,30 @@ export default function ClientesPage() {
     });
   }, [clientes, busqueda, filtroEstado, filtroPlan, ordenVencimiento]);
 
+  // Copiar las credenciales al portapapeles.
+  async function copiarDatos(texto: string) {
+    try {
+      await navigator.clipboard.writeText(texto);
+      setEstadoCopia("copiado");
+      return true;
+    } catch {
+      setEstadoCopia("pendiente");
+      return false;
+    }
+  }
+
   async function crearCliente(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+
+    // Guardar los datos antes de limpiar el formulario.
+    const emailCreado = email.trim();
+    const passwordCreada = password;
+    const tipoCreado = tipo;
+    const planCreado = plan;
+
     setGuardando(true);
     setMensaje("");
+    setEstadoCopia("");
 
     try {
       const respuesta = await fetch("/api/admin", {
@@ -156,9 +181,18 @@ export default function ClientesPage() {
         },
         // El vencimiento lo calcula siempre el servidor.
         body: JSON.stringify(
-          tipo === "prueba"
-            ? { email, password, tipo }
-            : { email, password, tipo, plan }
+          tipoCreado === "prueba"
+            ? {
+                email: emailCreado,
+                password: passwordCreada,
+                tipo: tipoCreado,
+              }
+            : {
+                email: emailCreado,
+                password: passwordCreada,
+                tipo: tipoCreado,
+                plan: planCreado,
+              }
         ),
       });
 
@@ -168,13 +202,55 @@ export default function ClientesPage() {
         throw new Error(datos.error || "No se pudo crear el cliente.");
       }
 
-      setMensaje(
-        tipo === "prueba" && typeof datos.vencimientoMs === "number"
-          ? `Prueba gratuita creada. Vence el ${mostrarFechaHora(
-              datos.vencimientoMs
-            )} (hora de Argentina).`
-          : "Cliente creado correctamente."
-      );
+      const tipoSuscripcion =
+        tipoCreado === "prueba"
+          ? `Prueba gratuita de 2 horas${
+              typeof datos.vencimientoMs === "number"
+                ? `\nVencimiento: ${mostrarFechaHora(
+                    datos.vencimientoMs
+                  )} (hora de Argentina)`
+                : ""
+            }`
+          : `Plan: ${planCreado}`;
+
+      // Preparar el mensaje que recibirá el cliente.
+      const mensajeCredenciales = [
+        "¡Tu cuenta de TV DIGITAL está lista!",
+        "",
+        `Usuario: ${emailCreado}`,
+        `Contraseña: ${passwordCreada}`,
+        tipoSuscripcion,
+        "",
+        "¡Gracias por elegirnos!",
+      ].join("\n");
+
+      setDatosCopiados(mensajeCredenciales);
+
+      // Intentar copiar automáticamente.
+      const copiado = await copiarDatos(mensajeCredenciales);
+
+      if (
+        tipoCreado === "prueba" &&
+        typeof datos.vencimientoMs === "number"
+      ) {
+        setMensaje(
+          copiado
+            ? `Prueba gratuita creada. Vence el ${mostrarFechaHora(
+                datos.vencimientoMs
+              )} (hora de Argentina). Los datos se copiaron al portapapeles.`
+            : `Prueba gratuita creada. Vence el ${mostrarFechaHora(
+                datos.vencimientoMs
+              )} (hora de Argentina). No se pudo copiar automáticamente; utilizá el botón para copiarlos.`
+        );
+      } else {
+        setMensaje(
+          copiado
+            ? "Cliente creado correctamente. Los datos se copiaron al portapapeles."
+            : "Cliente creado correctamente, pero no se pudo copiar automáticamente. Utilizá el botón para copiar los datos."
+        );
+      }
+
+      // Limpiar el formulario.
       setEmail("");
       setPassword("");
       setPlan("1 mes");
@@ -279,6 +355,7 @@ export default function ClientesPage() {
     <main className="min-h-screen bg-slate-950 p-6 text-white sm:p-10">
       <div className="mx-auto max-w-6xl">
         <CreditosDisponibles />
+
         <div className="mb-8 flex flex-wrap items-center justify-between gap-4">
           <div>
             <h1 className="text-3xl font-bold">Clientes</h1>
@@ -410,13 +487,42 @@ export default function ClientesPage() {
           </form>
         </section>
 
-        {mensaje && (
-          <p
+        {(mensaje || datosCopiados) && (
+          <div
             role="status"
-            className="mb-6 rounded-lg bg-slate-900 p-4 text-sm"
+            className="mb-6 rounded-lg border border-slate-800 bg-slate-900 p-4"
           >
-            {mensaje}
-          </p>
+            {mensaje && (
+              <p className="text-sm text-slate-200">{mensaje}</p>
+            )}
+
+            {datosCopiados && (
+              <div className="mt-3">
+                <button
+                  type="button"
+                  onClick={() => copiarDatos(datosCopiados)}
+                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500"
+                >
+                  {estadoCopia === "copiado"
+                    ? "Copiar datos nuevamente"
+                    : "Copiar datos del cliente"}
+                </button>
+
+                {estadoCopia === "copiado" && (
+                  <span className="ml-3 text-sm text-green-400">
+                    Datos copiados
+                  </span>
+                )}
+
+                {estadoCopia === "pendiente" && (
+                  <p className="mt-2 text-xs text-amber-300">
+                    El navegador no permitió copiar automáticamente.
+                    Presioná el botón para volver a intentarlo.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
         )}
 
         <section className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900">
